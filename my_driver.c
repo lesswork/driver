@@ -105,6 +105,8 @@ static int my_init(void)
 		goto clean_up;
 	}
 
+//=================================================================
+	// we can create dynamic memory by kzalloc also for our device structure
 	my_cdev = cdev_alloc( );
 	if(my_cdev == NULL)	{
 		printk(KERN_WARNING "cdev_alloc() fail. my_cdev not allocated.\n");
@@ -131,6 +133,7 @@ static int my_init(void)
 		printk(KERN_WARNING "cdev_add() failed\nUnable to add cdev\n");
 		goto clean_up;
 	}
+//=================================================================
 
 	/* add the driver to /dev/my_chardev -- here
 	 * command : $ ls /dev/
