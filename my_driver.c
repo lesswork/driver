@@ -84,7 +84,7 @@ static int my_init(void)
 
 	/*
 	 * Allocate Major number dynamically
-	 * Get a range of minor numbers (starting with 0) to work with NUMBER_OF_MINOR_DEVICE
+	 * Get a range of minor numbers (starting with 0) to work with.
 	 */
 	ret = alloc_chrdev_region(&devnum, firstminor, NUMBER_OF_MINOR_DEVICE, DEVICE_NAME);
 	if (ret < 0) {
@@ -105,7 +105,6 @@ static int my_init(void)
 		goto clean_up;
 	}
 
-
 	my_cdev = cdev_alloc( );
 	if(my_cdev == NULL)	{
 		printk(KERN_WARNING "cdev_alloc() fail. my_cdev not allocated.\n");
@@ -116,13 +115,17 @@ static int my_init(void)
 	my_cdev->count = 0;
 	my_cdev->owner = THIS_MODULE;
 
-	cdev_init(my_cdev, my_cdev->ops);		//my_cdev should not be NULL BUG HERE
-/*
-	my_cdev->ops = &my_fops;
-	my_cdev->count = 0;
-	my_cdev->owner = THIS_MODULE;
-*/
-	ret = cdev_add(my_cdev, devnum, 0);
+	/** Initiliaze character dev with fops **/
+	cdev_init(my_cdev, my_cdev->ops);		//my_cdev should not be NULL
+
+	/* add the character device to the system
+	 *
+	 * Here 1 means only 1 minor number, you can give 2 for 2 minor device, 
+	 * the last param is the count of minor number enrolled
+	 *
+	 * You should not call cdev_add until your driver is completely ready to handle operations
+	 */
+	ret = cdev_add(my_cdev, devnum, 1);
 	if(ret < 0)
 	{
 		printk(KERN_WARNING "cdev_add() failed\nUnable to add cdev\n");
