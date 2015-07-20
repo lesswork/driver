@@ -10,7 +10,6 @@
 #define MY_NDEVICES 2
 #define NUMBER_OF_MINOR_DEVICE 1
 
-static dev_t devnum;
 static int my_device_Open;
 static int Major;		//save Major number in this variable
 static int my_ndevices = MY_NDEVICES;		//number of device which can access your driver
@@ -18,8 +17,10 @@ static int my_ndevices = MY_NDEVICES;		//number of device which can access your 
 static struct cdev *my_cdev = NULL;
 static struct class *my_class = NULL;
 
-static int myint = 3;
+static int myint = 0;
+static int major = 0;
 module_param(myint, int, 0);
+module_param(major, int, 0);
 MODULE_PARM_DESC(myint, "An Integer type for debug level (1,2,3)");
 
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
@@ -65,14 +66,34 @@ static struct file_operations my_fops =
 	.release	= device_release
 };
 
+static void my_cleanup_module(void)
+{
+	if(my_class) {
+		device_destroy(my_class, MKDEV(Major, 0));		//static 0 should be change with other dynamic
+	}
+
+	if(my_cdev != NULL) {
+		cdev_del(my_cdev);
+	}
+
+	if(my_class) {
+		class_destroy(my_class);
+	}
+
+	unregister_chrdev_region(MKDEV(Major, 0), NUMBER_OF_MINOR_DEVICE);
+	return;
+}
+
 static int my_init(void)
 {
 	int ret = 0;
 	int firstminor = 0;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
 	struct device *device = NULL;
+	dev_t devnum;
 
 	//print commandline argument
 	printk(KERN_INFO "myint's debug level : %d selected.\n=============\n",myint);
+	printk(KERN_INFO "major number argv : %d selected.\n=============\n",major);
 
 	//check for valid number of devices select for driver
 	if(my_ndevices <= 0)
@@ -82,11 +103,20 @@ static int my_init(void)
 		return ret;
 	}
 
-	/*
-	 * Allocate Major number dynamically
-	 * Get a range of minor numbers (starting with 0) to work with.
-	 */
-	ret = alloc_chrdev_region(&devnum, firstminor, NUMBER_OF_MINOR_DEVICE, DEVICE_NAME);
+	devnum = MKDEV(major,0);
+	if(devnum == 0) {
+		/*
+		 * Allocate Major number dynamically
+		 * Get a range of minor numbers (starting with 0) to work with.
+		 */
+		ret = alloc_chrdev_region(&devnum, firstminor, NUMBER_OF_MINOR_DEVICE, DEVICE_NAME);
+	}
+	else {
+		/*
+		 * Allocate Major number statically
+		 */
+		ret = register_chrdev_region(devnum, NUMBER_OF_MINOR_DEVICE, DEVICE_NAME);
+	}
 	if (ret < 0) {
 		printk(KERN_INFO "Major number allocation is failed\n");
 		return ret; 
@@ -138,56 +168,25 @@ static int my_init(void)
 	/* add the driver to /dev/my_chardev -- here
 	 * command : $ ls /dev/
 	 */
-	device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
+	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
+	device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME "-%d", firstminor);
 	if (IS_ERR(device)) {
 		ret = PTR_ERR(device);
 		printk(KERN_WARNING "[target] Error %d while trying to create %s%d",
 		ret, DEVICE_NAME, firstminor);
 		goto clean_up;
 	}
-
-
 	return 0; 
 
 clean_up:
-	if(my_class) {
-		device_destroy(my_class, MKDEV(Major, firstminor));
-	}
-
-	if(my_cdev != NULL) {
-		cdev_del(my_cdev);
-	}
-
-/*	
-	if(my_cdev != NULL) {
-		kfree(my_cdev);
-	}
-*/	
-
-	if(my_class) {
-		class_destroy(my_class);
-	}
-
-	unregister_chrdev_region(devnum, 1);
+	my_cleanup_module();
 	return ret;
 }
 
 static void my_exit(void)
 {
 	printk(KERN_INFO "my_exit() called\n");
-	if(my_class) {
-		device_destroy(my_class, MKDEV(Major, 0));
-	}
-
-	if(my_cdev != NULL) {
-		cdev_del(my_cdev);
-	}
-
-	if(my_class) {
-		class_destroy(my_class);
-	}
-
-	unregister_chrdev_region(devnum, 1);
+	my_cleanup_module();
 	return;
 }
 
