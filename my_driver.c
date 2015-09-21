@@ -3,17 +3,41 @@
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include <linux/device.h>
+#include <linux/slab.h>
+#include <linux/sysfs.h>
 
 #define SUCCESS 0
 #define DEVICE_NAME "my_chardev"
 #define CLASS_DEVICE_NAME "my_class_chardev"
-#define MY_NDEVICES 2
+#define MY_NDEVICES 1
 #define NUMBER_OF_MINOR_DEVICE 1
 
+//Enable it for define more than one /sys/class nodes for communication
+#define GROUP_ATTRS
+
+/* The structure to represent 'my_dev' devices.
+* data - data buffer;
+* buffer_size - size of the data buffer;
+* block_size - maximum number of bytes that can be read or written
+* in one call;
+* my_dev_mutex - a mutex to protect the fields of this structure;
+* cdev - character device structure.
+*/
+struct my_dev {
+	unsigned char *data;
+	unsigned long buffer_size;
+
+	unsigned long block_size;
+
+	struct mutex my_dev_mutex;
+	struct cdev my_cdev;
+	struct device *device;
+};
+
 static int my_device_Open;
-static int Major;		//save Major number in this variable
 static int my_ndevices = MY_NDEVICES;		//number of device which can access your driver
 
+static struct my_dev *my_devices = NULL;
 static struct device *device = NULL;
 static struct cdev *my_cdev = NULL;
 static struct class *my_class = NULL;
@@ -41,11 +65,32 @@ static ssize_t work_store(struct device* dev, struct device_attribute* attr, con
 
 static ssize_t work_show(struct device* dev, struct device_attribute* attr, char* buf)
 {
-	dbg1("work_show() %u\n", Major);
-	return snprintf(buf, 10, "%u\n", Major);
+	dbg1("work_show() %u\n", major);
+	return snprintf(buf, 10, "%u\n", major);
 }
 
 static DEVICE_ATTR(work, S_IRUGO | S_IWUGO, work_show, work_store);
+
+///////////////////// Group Attribute /////////////////////////
+
+#ifdef GROUP_ATTRS
+static struct attribute *dev_attrs[] = {
+		&dev_attr_work.attr,
+		NULL,
+};
+
+static struct attribute_group dev_attr_group = {
+	.attrs = dev_attrs,
+};
+
+static const struct attribute_group *dev_attr_groups[] = {
+	&dev_attr_group,
+	NULL,
+};
+static struct kobject *example_kobj;
+#endif
+
+///////////////////////////////////////////////////////////////
 
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
 {
@@ -93,8 +138,12 @@ static struct file_operations my_fops =
 static void my_cleanup_module(void)
 {
 	if(my_class) {
+#ifdef GROUP_ATTRS
+		kobject_put(example_kobj);
+#else
 		device_remove_file(device, &dev_attr_work);
-		device_destroy(my_class, MKDEV(Major, 0));		//static 0 should be change with other dynamic
+#endif
+		device_destroy(my_class, MKDEV(major, 0));		//static 0 should be change with other dynamic
 	}
 
 	if(my_cdev != NULL) {
@@ -105,7 +154,7 @@ static void my_cleanup_module(void)
 		class_destroy(my_class);
 	}
 
-	unregister_chrdev_region(MKDEV(Major, 0), NUMBER_OF_MINOR_DEVICE);
+	unregister_chrdev_region(MKDEV(major, 0), my_ndevices);
 	return;
 }
 
@@ -136,21 +185,21 @@ For Major number select statically : pass major=250 as argument\n=============\n
 		 * Allocate Major number dynamically
 		 * Get a range of minor numbers (starting with 0) to work with.
 		 */
-		ret = alloc_chrdev_region(&devnum, firstminor, NUMBER_OF_MINOR_DEVICE, DEVICE_NAME);
+		ret = alloc_chrdev_region(&devnum, firstminor, my_ndevices, DEVICE_NAME);
 	}
 	else {
 		/*
 		 * Allocate Major number statically
 		 */
-		ret = register_chrdev_region(devnum, NUMBER_OF_MINOR_DEVICE, DEVICE_NAME);
+		ret = register_chrdev_region(devnum, my_ndevices, DEVICE_NAME);
 	}
 	if (ret < 0) {
 		err("Major number allocation is failed\n");
 		return ret; 
 	}
-	Major = MAJOR(devnum);
-	devnum = MKDEV(Major,0);
-	info("The major number is %d\n",Major);
+	major = MAJOR(devnum);
+	devnum = MKDEV(major,0);
+	info("The major number is %d\n",major);
 
 	/* Create device class called CLASS_DEVICE_NAME macro(before allocation of devices) 
 	 * command : $ ls /sys/class
@@ -159,6 +208,15 @@ For Major number select statically : pass major=250 as argument\n=============\n
 	if (IS_ERR(my_class)) {
 		ret = PTR_ERR(my_class);
 		err("class_create() fail with return val: %d\n",ret);
+		goto clean_up;
+	}
+
+    /* Allocate the array of devices */
+	my_devices = (struct my_dev *) kzalloc((sizeof(struct my_dev) * my_ndevices), GFP_KERNEL);
+	if(my_devices == NULL)
+	{
+		ret = -ENOMEM;
+		err("kzalloc failed. No memory allocated to structure.\n");
 		goto clean_up;
 	}
 
@@ -192,9 +250,36 @@ For Major number select statically : pass major=250 as argument\n=============\n
 	}
 //=================================================================
 
+#ifdef GROUP_ATTRS
+	//dbg3("device  kzalloc()\n");
+	//device = kzalloc(sizeof(struct device),GFP_KERNEL);
+	//dbg3("assigning group()\n");
+	//device->groups = dev_attr_groups;
+
+	/*
+	 * Create a simple kobject with the name of "kobject_example",
+	 * located under /sys/kernel/
+	 *
+	 * As this is a simple directory, no uevent will be sent to
+	 * userspace.  That is why this function should not be used for
+	 * any type of dynamic kobjects, where the name and number are
+	 * not known ahead of time.
+	 */
+	example_kobj = kobject_create_and_add("kobject_example", kernel_kobj);
+	if (!example_kobj)
+		return -ENOMEM;
+
+	/* Create the files associated with this kobject */
+	ret = sysfs_create_group(example_kobj, *dev_attr_groups);
+	if (ret)
+		kobject_put(example_kobj);
+
+#endif
+
 	/* add the driver to /dev/my_chardev -- here
 	 * command : $ ls /dev/
 	 */
+	dbg3("device_create()\n");
 	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
 	device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME "-%d", firstminor);
 	if (IS_ERR(device)) {
@@ -203,12 +288,16 @@ For Major number select statically : pass major=250 as argument\n=============\n
 		goto clean_up;
 	}
 
+#ifndef GROUP_ATTRS
 	/* Now we can create the sysfs endpoints (don't care about errors).
 	  * dev_attr_work come from the DEVICE_ATTR(...) earlier */
+	dbg3("device_create_file()\n");
 	ret = device_create_file(device, &dev_attr_work);
 	if (ret < 0) {
 		warn("failed to create write /sys endpoint - continuing without\n");
 	}
+#endif
+	dbg3("OUT\n");
 	return 0; 
 
 clean_up:
