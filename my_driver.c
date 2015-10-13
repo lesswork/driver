@@ -5,15 +5,16 @@
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
+#include <linux/spinlock_types.h>
 
 #define SUCCESS 0
-#define DEVICE_NAME "my_chardev"
-#define CLASS_DEVICE_NAME "my_class_chardev"
+#define DEVICE_NAME "circular"
+#define CLASS_DEVICE_NAME "circbuf"
 #define MY_NDEVICES 1
 #define NUMBER_OF_MINOR_DEVICE 1
 
 //Enable it for define more than one /sys/class nodes for communication
-#define GROUP_ATTRS
+//#define GROUP_ATTRS
 
 /* The structure to represent 'my_dev' devices.
 * data - data buffer;
@@ -30,6 +31,7 @@ struct my_dev {
 	unsigned long block_size;
 
 	struct mutex my_dev_mutex;
+	spinlock_t my_dev_spinlock;
 	struct cdev my_cdev;
 	struct device *device;
 };
@@ -49,7 +51,7 @@ module_param(major, int, 0);
 MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 
 /* We'll use our own macros for printk */
-#define CLASS_NAME "Driver"
+#define CLASS_NAME "Circular Driver"
 #define dbg1(format, arg...) do { if (debug > 0) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg2(format, arg...) do { if (debug > 1) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg3(format, arg...) do { if (debug > 2) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
@@ -94,30 +96,32 @@ static struct kobject *example_kobj;
 
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
 {
-	info("device_file_read IN");
+	info("device_file_read IN\n");
+	//read buffer till empty OR generate error on empty buffer read.
 	return 0;
 }
 
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
-	info("device_file_write IN");
+	info("device_file_write IN\n");
+	//write in buffer till its kernel buffer limit and give buffer overflow error on full buffer write
 	return 0;
 }
 
 static int device_open(struct inode *node, struct file *file)
 {
-	info("device_open IN");
-	my_device_Open++;		//increment count when device is open.
+	info("device_open IN\n");
 	if(my_device_Open)
 	{
 		return -EBUSY;
 	}
+	my_device_Open++;		//increment count when device is open.
 	return SUCCESS;
 }
 
 static int device_release(struct inode *node, struct file *file)
 {
-	info("device_release IN");
+	info("device_release IN\n");
 	my_device_Open--;		//Decrement count when device is open.
 	if(my_device_Open == 0)
 	{
@@ -168,8 +172,8 @@ static int my_init(void)
 	info("\n=============\nFor debug level 1 ,2 ,3 : pass debug=3 as argument\n\
 For Major number select statically : pass major=250 as argument\n=============\n");
 
-	dbg2("debug's debug level : %d selected.\n",debug);
-	dbg2("major number argv : %d selected.\n",major);
+	info("debug's debug level : %d selected.\n",debug);
+	info("major number argv : %d selected.\n",major);
 
 	//check for valid number of devices select for driver
 	if(my_ndevices <= 0)
