@@ -12,6 +12,7 @@
 #define CLASS_DEVICE_NAME "circbuf"
 #define MY_NDEVICES 1
 #define NUMBER_OF_MINOR_DEVICE 1
+#define BUF_SIZE 10
 
 //Enable it for define more than one /sys/class nodes for communication
 //#define GROUP_ATTRS
@@ -27,9 +28,13 @@
 struct my_dev {
 	int minor;
 	unsigned char *data;
+	char buf[BUF_SIZE];
+	
 	unsigned long buffer_size;
 
 	unsigned long block_size;
+	char* head;
+	char* tail;
 
 	struct mutex my_dev_mutex;
 	spinlock_t my_dev_spinlock;
@@ -98,44 +103,64 @@ static ssize_t device_file_read(struct file *file, char __user *buffer, size_t l
 {
 	info("device_file_read IN\n");
 	//read buffer till empty OR generate error on empty buffer read.
-/*	int chars_read = 0;
 
-	printk("device_read called \n");
+	for(i = 0 ; i< length ; i++)
+	{
+		if(size != 0 && (read_ptr != write_ptr)) {
+			put_user(*tail, buffer++);
+			printk("Reading %c \n", *tail);
 
-	while(length && *read_ptr && (read_ptr != write_ptr)) {
-		put_user(*(read_ptr++), buffer++);
+			if(tail >= buf + BUF_SIZE)
+			{
+				tail = buf;
+			}
+			else
+			{
+				tail++;
+			}
 
-		printk("Reading %c \n", *read_ptr);
-
-		if(read_ptr >= buf + BUF_SIZE)
-			read_ptr = buf;
-
-		chars_read++;
-		length--;
+			size--;
+		}
+		else
+		{
+			return i;
+		}
 	}
 
-	return chars_read;*/
-	return 0;
+	return length;
 }
 
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
 	info("device_file_write IN\n");
 	//write in buffer till its kernel buffer limit and give buffer overflow error on full buffer write
-/*	int i;
+	int i;
 
-	printk("device_write called \n");
+	for(i = 0; i < length; i++) {
+		if (head == tail && size == BUF_SIZE)
+		{
+			err("Kernel buffer Full\n");
+			return i;
+		}
 
-	for(i = 0; i < len; i++) {
-		get_user(*write_ptr, buff++);
-		printk("Writing %c \n", *write_ptr);
-		write_ptr++;
-		if (write_ptr >= buf + BUF_SIZE)
-			write_ptr = buf;
+		if( get_user(*head, buffer++) == -EFAULT)
+		{
+			err("write to kernel buffer fail\n");
+			return -EFAULT;
+		}
+		printk("Writing %c\n", *head);
+		size++;
+		if(head >= buf + BUF_SIZE)
+		{
+			head = buf;
+		}
+		else
+		{
+			head++;
+		}
 	}
 
-	return len;*/
-	return 0;
+	return length;
 }
 
 static int device_open(struct inode *node, struct file *file)
