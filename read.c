@@ -1,4 +1,4 @@
-#include<stdio.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -18,13 +18,13 @@ int main(int argc, char *argv[])
 		return fd;
 	}
 
-	ret = read(fd, str, strlen(str) + 1);
+	ret = read(fd, str, 5);
 	if(ret == -1)
 	{
 		perror("Not able to open device file.");
 		return ret;
 	}
-
+	close(fd);
 	printf("Read string is %ld = %s\n", ret, str);
 
 	return 0;

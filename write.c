@@ -27,6 +27,7 @@ int main(int argc, char *argv[])
 		perror("Not able to wrote device file.");
 		return ret;
 	}
+	close(fd);
 
 	return 0;
 }

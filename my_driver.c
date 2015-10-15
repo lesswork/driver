@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/spinlock_types.h>
+#include <asm/uaccess.h>
 
 #define SUCCESS 0
 #define DEVICE_NAME "circular"
@@ -27,14 +28,14 @@
  */
 struct my_dev {
 	int minor;
-	unsigned char *data;
-	char buf[BUF_SIZE];
-	
+	unsigned char data[BUF_SIZE];
+	//char buf[BUF_SIZE];
+
 	unsigned long buffer_size;
 
 	unsigned long block_size;
-	char* head;
-	char* tail;
+	unsigned char* head;
+	unsigned char* tail;
 
 	struct mutex my_dev_mutex;
 	spinlock_t my_dev_spinlock;
@@ -48,6 +49,7 @@ static int my_ndevices = MY_NDEVICES;		//number of device which can access your 
 static struct device *device = NULL;
 static struct cdev *my_cdev = NULL;
 static struct class *my_class = NULL;
+spinlock_t lock;
 
 static int debug = 0;
 static int major = 0;
@@ -62,8 +64,8 @@ MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 #define dbg3(format, arg...) do { if (debug > 2) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define err(format, arg...) pr_err(CLASS_NAME ": " format, ## arg)
 #define info(format, arg...) pr_info(CLASS_NAME ": " format, ## arg)
-#define warn(format, arg...) pr_warn(CLASS_NAME ": " format, ## arg)
-
+#define warn(format, arg...) pr_warning(CLASS_NAME ": " format, ## arg)
+/*
 static ssize_t work_store(struct device* dev, struct device_attribute* attr, const char* buf, size_t count)
 {
 	dbg1("work_store() %s\n",buf);
@@ -77,7 +79,7 @@ static ssize_t work_show(struct device* dev, struct device_attribute* attr, char
 }
 
 static DEVICE_ATTR(work, S_IRUGO | S_IWUGO, work_show, work_store);
-
+*/
 ///////////////////// Group Attribute /////////////////////////
 
 #ifdef GROUP_ATTRS
@@ -99,115 +101,174 @@ static struct kobject *example_kobj;
 
 ///////////////////////////////////////////////////////////////
 
+// buffer is where we save data for user space
+// Retrun : No. of read byte	OR
+//			0 if buffer is empty
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
 {
-	info("device_file_read IN\n");
+	struct my_dev *my_devices = (struct my_dev *) file->private_data;
+	int i = 0;
+
+	dbg1("device_file_read IN\n");
 	//read buffer till empty OR generate error on empty buffer read.
 
-	for(i = 0 ; i< length ; i++)
+/*	for(i = 0 ; i < length ; i++)
 	{
-		if(size != 0 && (read_ptr != write_ptr)) {
-			put_user(*tail, buffer++);
-			printk("Reading %c \n", *tail);
+		info("loop\n");
+//		spin_lock(&lock);
+		if(my_devices->buffer_size == 0 || (my_devices->tail == my_devices->head)) {
+			err("Kernel buffer Empty\n");
+			info("ret : %d\n",i);
+			break;
+			//return i;
+		}
 
-			if(tail >= buf + BUF_SIZE)
-			{
-				tail = buf;
-			}
-			else
-			{
-				tail++;
-			}
+		if (put_user(*(my_devices->tail), buffer++) == -EFAULT)
+		{
+			err("read to kernel buffer fail\n");
+			return -EFAULT;
+		}
 
-			size--;
+		dbg2("Reading %c \n", *(my_devices->tail));
+
+		if(my_devices->tail >= my_devices->data + BUF_SIZE)
+		{
+			my_devices->tail = my_devices->data;
 		}
 		else
 		{
-			return i;
+			my_devices->tail++;
 		}
-	}
 
-	return length;
+		my_devices->buffer_size--;
+//		spin_unlock(&lock);
+	}
+*/
+	dbg1("device_file_read OUT\n");
+	//return length;
+	return i;
 }
 
+// buffer is where we take data to store in kernel space
+// Retrun : No. of write byte	OR
+//			0 if buffer is full
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
-	info("device_file_write IN\n");
-	//write in buffer till its kernel buffer limit and give buffer overflow error on full buffer write
-	int i;
+	struct my_dev *my_devices = (struct my_dev *) file->private_data;
+	int i = 0;
 
-	for(i = 0; i < length; i++) {
-		if (head == tail && size == BUF_SIZE)
+	dbg1("device_file_write IN\n");
+	//write in buffer till its kernel buffer limit and give buffer overflow error on full buffer write
+
+/*	for(i = 0; i < length; i++) {
+//		spin_lock(&lock);
+		if (my_devices->head == my_devices->tail && my_devices->buffer_size == BUF_SIZE)
 		{
 			err("Kernel buffer Full\n");
+			info("ret : %d\n",i)
 			return i;
 		}
 
-		if( get_user(*head, buffer++) == -EFAULT)
+		if( get_user(*(my_devices->head), buffer++) == -EFAULT)
 		{
 			err("write to kernel buffer fail\n");
 			return -EFAULT;
 		}
-		printk("Writing %c\n", *head);
-		size++;
-		if(head >= buf + BUF_SIZE)
+		printk("Writing %c\n", *(my_devices->head));
+
+		my_devices->buffer_size++;
+
+		if((my_devices->head) >= my_devices->data + BUF_SIZE)
 		{
-			head = buf;
+			(my_devices->head) = my_devices->data;
 		}
 		else
 		{
-			head++;
+			my_devices->head++;
 		}
+//		spin_unlock(&lock);
 	}
 
+	dbg1("device_file_write OUT\n");*/
 	return length;
 }
 
 static int device_open(struct inode *node, struct file *file)
 {
 	struct my_dev *my_devices = NULL;
-	info("device_open IN\n");
+	dbg1("device_open IN\n");
+
 	if(my_device_Open)
 	{
+		err("device already open.\n");
 		return -EBUSY;
 	}
 	my_device_Open++;		//increment count when device is open.
 
 	/* Allocate the array of devices in custom structure*/
-	my_devices = (struct my_dev *) kzalloc((sizeof(struct my_dev) * my_ndevices), GFP_KERNEL);
+	my_devices = (struct my_dev *) kmalloc((sizeof(struct my_dev) * my_ndevices), GFP_KERNEL);
 	if(my_devices == NULL)
 	{
 		err("kzalloc failed. No memory allocated to structure.\n");
 		return -ENOMEM;
 	}
-	my_devices = container_of(node->i_cdev, struct my_dev, my_cdev);
-	info("device_open node->i_cdev: %x\n", node->i_cdev);
-	info("device_open my_devices->my_cdev: %x\n", &my_devices->my_cdev);
+	//my_devices = container_of(node->i_cdev, struct my_dev, my_cdev);
+	//dbg2("device_open my_devices->my_cdev: %x\n", &my_devices->my_cdev);
+	dbg2("device_open node->i_cdev: %x\n", node->i_cdev);
+	dbg2("device_open my_cdev: %x\n", my_cdev);
 
-	//cannot open multiple application as it is using static variable here.
-	my_devices->data = NULL;
+	//cannot open multiple application as using static variable here.
+	/*my_devices->data = (char *) kmalloc((sizeof(char) * BUF_SIZE), GFP_KERNEL);
+	if(my_devices->data == NULL)
+	{
+		err("kzalloc failed at my_devices->data. No memory allocated to structure.\n");
+		return -ENOMEM;
+	}*/
+
+	my_devices->tail = my_devices->data;
+	my_devices->head = my_devices->data;
+
 	my_devices->buffer_size = 0;
+	my_devices->device = device;
 	//unsigned long block_size;
 	//struct mutex my_dev_mutex;
-	spin_lock_init(&my_devices->my_dev_spinlock);
+	//spin_lock_init(&my_devices->my_dev_spinlock);
 	//my_devices->my_cdev = my_cdev;
-	my_devices->device = device;
 
-	info("device_open MAJOR(node->i_rdev): %d i_fop: %x\n", MAJOR(node->i_rdev), node->i_fop);
+	dbg2("device_open MAJOR(node->i_rdev): %d i_fop: %x\n", MAJOR(node->i_rdev), node->i_fop);
 
 	file->private_data = (struct my_dev *) my_devices;
+	dbg1("device_open OUT\n");
 	return SUCCESS;
 }
 
 static int device_release(struct inode *node, struct file *file)
 {
-	info("device_release IN\n");
+	struct my_dev *my_devices = (struct my_dev *) file->private_data;
+	dbg1("device_release IN\n");
+
 	my_device_Open--;		//Decrement count when device is open.
 	if(my_device_Open == 0)
 	{
-		//release device
+		info("device releasing...\n");
 	}
-	kfree(file->private_data);
+	//if(my_devices->data)
+	{
+		//kfree(my_devices->data);
+		//my_devices->data = NULL;
+		my_devices->head = NULL;
+		my_devices->tail = NULL;
+		dbg3("kfree(my_devices->data) called\n");
+	}
+	if(my_devices)
+	{
+		//kfree(file->private_data);
+		kfree(my_devices);
+		my_devices = NULL;
+		file->private_data = NULL;
+		dbg3("kfree(file->private_data) called\n");
+	}
+	dbg1("device_release OUT\n");
 	return SUCCESS;
 }
 
@@ -222,27 +283,27 @@ static struct file_operations my_fops =
 
 static void my_cleanup_module(void)
 {
-	if(my_class) {
-		info("1. device_destroy.\n");
-#ifdef GROUP_ATTRS
-		kobject_put(example_kobj);
-#else
-		device_remove_file(device, &dev_attr_work);
-#endif
-		device_destroy(my_class, MKDEV(major, 0));		//static 0 should be change with other dynamic
-	}
+	dbg2("my_cleanup_module my_cdev: %x\n", my_cdev);
 
 	if(my_cdev != NULL) {
 		info("2. cdev_del.\n");
 		cdev_del(my_cdev);
 	}
 
-	if(my_class) {
+	if(my_class != NULL) {
+		info("1. device_destroy.\n");
+		//device_remove_file(device, &dev_attr_work);
+		device_destroy(my_class, MKDEV(major, 0));		//static 0 should be change with other dynamic
+	}
+
+	if(my_class != NULL) {
 		info("3. class_destroy.\n");
 		class_destroy(my_class);
+		my_class = NULL;
 	}
 
 	unregister_chrdev_region(MKDEV(major, 0), my_ndevices);
+	dbg1("my_cleanup_module OUT\n");
 	return;
 }
 
@@ -253,7 +314,7 @@ static int my_init(void)
 	dev_t devnum;
 
 	//print commandline argument
-	info("\n=============\nFor debug level 1 ,2 ,3 : pass debug=3 as argument\n\
+	info("\n=============\nFor debug level 1 ,2 ,3 : pass debug=3 as argument\n \
 			For Major number select statically : pass major=250 as argument\n=============\n");
 
 	info("debug's debug level : %d selected.\n",debug);
@@ -307,13 +368,25 @@ static int my_init(void)
 		goto clean_up;
 	}
 
-	info("device_init my_cdev->ops: %x\n", &my_cdev->ops);
 	my_cdev->ops = &my_fops;
 	my_cdev->count = 0;
 	my_cdev->owner = THIS_MODULE;
+	dbg2("device_init my_cdev->ops: %x\n", &my_cdev->ops);
 
 	/** Initiliaze character dev with fops **/
 	cdev_init(my_cdev, my_cdev->ops);		//my_cdev should not be NULL
+
+	/* add the driver to /dev/my_chardev -- here
+	 * command : $ ls /dev/
+	 */
+	dbg3("device_create()\n");
+	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
+	device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME "-%d", firstminor);
+	if (IS_ERR(device)) {
+		ret = PTR_ERR(device);
+		err("[target] Error %d while trying to create %s%d", ret, DEVICE_NAME, firstminor);
+		goto clean_up;
+	}
 
 	/* add the character device to the system
 	 *
@@ -328,54 +401,16 @@ static int my_init(void)
 		err("cdev_add() failed\nUnable to add cdev\n");
 		goto clean_up;
 	}
+
 	//=================================================================
-
-#ifdef GROUP_ATTRS
-	dbg3("device  kzalloc()\n");
-	//device = kzalloc(sizeof(struct device),GFP_KERNEL);
-	//dbg3("assigning group()\n");
-	//device->groups = dev_attr_groups;
-
-	/*
-	 * Create a simple kobject with the name of "kobject_example",
-	 * located under /sys/kernel/
-	 *
-	 * As this is a simple directory, no uevent will be sent to
-	 * userspace.  That is why this function should not be used for
-	 * any type of dynamic kobjects, where the name and number are
-	 * not known ahead of time.
-	 */
-	example_kobj = kobject_create_and_add("kobject_example", kernel_kobj);
-	if (!example_kobj)
-		return -ENOMEM;
-
-	/* Create the files associated with this kobject */
-	ret = sysfs_create_group(example_kobj, *dev_attr_groups);
-	if (ret)
-		kobject_put(example_kobj);
-
-#endif
-
-	/* add the driver to /dev/my_chardev -- here
-	 * command : $ ls /dev/
-	 */
-	dbg3("device_create()\n");
-	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
-	device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME "-%d", firstminor);
-	if (IS_ERR(device)) {
-		ret = PTR_ERR(device);
-		err("[target] Error %d while trying to create %s%d", ret, DEVICE_NAME, firstminor);
-		goto clean_up;
-	}
-
 #ifndef GROUP_ATTRS
 	/* Now we can create the sysfs endpoints (don't care about errors).
 	 * dev_attr_work come from the DEVICE_ATTR(...) earlier */
-	dbg3("device_create_file()\n");
+/*	dbg3("device_create_file()\n");
 	ret = device_create_file(device, &dev_attr_work);
 	if (ret < 0) {
 		warn("failed to create write /sys endpoint - continuing without\n");
-	}
+	}*/
 #endif
 	dbg3("OUT\n");
 	return 0; 
@@ -389,6 +424,7 @@ static void my_exit(void)
 {
 	info("my_exit() called\n");
 	my_cleanup_module();
+	dbg3("OUT\n");
 	return;
 }
 
