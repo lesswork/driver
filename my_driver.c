@@ -7,6 +7,7 @@
 #include <linux/sysfs.h>
 #include <linux/spinlock_types.h>
 #include <asm/uaccess.h>
+#include <linux/string.h>
 
 #define SUCCESS 0
 #define DEVICE_NAME "circular"
@@ -62,10 +63,10 @@ MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 #define dbg1(format, arg...) do { if (debug > 0) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg2(format, arg...) do { if (debug > 1) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg3(format, arg...) do { if (debug > 2) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
-#define err(format, arg...) pr_err(CLASS_NAME ": " format, ## arg)
+#define err(format, arg...) pr_err(CLASS_NAME ": error: " format, ## arg)
 #define info(format, arg...) pr_info(CLASS_NAME ": " format, ## arg)
-#define warn(format, arg...) pr_warning(CLASS_NAME ": " format, ## arg)
-/*
+#define warn(format, arg...) pr_warning(CLASS_NAME ": warning: " format, ## arg)
+
 static ssize_t work_store(struct device* dev, struct device_attribute* attr, const char* buf, size_t count)
 {
 	dbg1("work_store() %s\n",buf);
@@ -79,7 +80,7 @@ static ssize_t work_show(struct device* dev, struct device_attribute* attr, char
 }
 
 static DEVICE_ATTR(work, S_IRUGO | S_IWUGO, work_show, work_store);
-*/
+
 ///////////////////// Group Attribute /////////////////////////
 
 #ifdef GROUP_ATTRS
@@ -110,17 +111,16 @@ static ssize_t device_file_read(struct file *file, char __user *buffer, size_t l
 	int i = 0;
 
 	dbg1("device_file_read IN\n");
+	dbg1("buffer_size : %d\n",my_devices->buffer_size);
 	//read buffer till empty OR generate error on empty buffer read.
 
-/*	for(i = 0 ; i < length ; i++)
+	for(i = 0 ; i < length ; i++)
 	{
 		info("loop\n");
-//		spin_lock(&lock);
-		if(my_devices->buffer_size == 0 || (my_devices->tail == my_devices->head)) {
+		if(my_devices->buffer_size == 0 && (my_devices->tail == my_devices->head)) {
 			err("Kernel buffer Empty\n");
 			info("ret : %d\n",i);
 			break;
-			//return i;
 		}
 
 		if (put_user(*(my_devices->tail), buffer++) == -EFAULT)
@@ -129,9 +129,9 @@ static ssize_t device_file_read(struct file *file, char __user *buffer, size_t l
 			return -EFAULT;
 		}
 
-		dbg2("Reading %c \n", *(my_devices->tail));
+		dbg3("%d Reading %x : %c \n", my_devices->buffer_size, my_devices->tail, *(my_devices->tail));
 
-		if(my_devices->tail >= my_devices->data + BUF_SIZE)
+		if(my_devices->tail >= my_devices->data + BUF_SIZE - 1)
 		{
 			my_devices->tail = my_devices->data;
 		}
@@ -139,13 +139,10 @@ static ssize_t device_file_read(struct file *file, char __user *buffer, size_t l
 		{
 			my_devices->tail++;
 		}
-
 		my_devices->buffer_size--;
-//		spin_unlock(&lock);
 	}
-*/
+
 	dbg1("device_file_read OUT\n");
-	//return length;
 	return i;
 }
 
@@ -158,14 +155,14 @@ static ssize_t device_file_write(struct file *file, const char __user *buffer, s
 	int i = 0;
 
 	dbg1("device_file_write IN\n");
+	dbg1("Write %d: %s\n", length, buffer);
 	//write in buffer till its kernel buffer limit and give buffer overflow error on full buffer write
 
-/*	for(i = 0; i < length; i++) {
-//		spin_lock(&lock);
-		if (my_devices->head == my_devices->tail && my_devices->buffer_size == BUF_SIZE)
+	for(i = 0; i < length; i++) {
+		if (my_devices->head == my_devices->tail && my_devices->buffer_size >= BUF_SIZE)
 		{
 			err("Kernel buffer Full\n");
-			info("ret : %d\n",i)
+			info("ret : %d\n",i);
 			return i;
 		}
 
@@ -174,11 +171,11 @@ static ssize_t device_file_write(struct file *file, const char __user *buffer, s
 			err("write to kernel buffer fail\n");
 			return -EFAULT;
 		}
-		printk("Writing %c\n", *(my_devices->head));
-
 		my_devices->buffer_size++;
 
-		if((my_devices->head) >= my_devices->data + BUF_SIZE)
+		dbg3("%d Writing %x, %c\n", my_devices->buffer_size, my_devices->head, *(my_devices->head));
+
+		if((my_devices->head) >= my_devices->data + BUF_SIZE - 1)
 		{
 			(my_devices->head) = my_devices->data;
 		}
@@ -186,10 +183,9 @@ static ssize_t device_file_write(struct file *file, const char __user *buffer, s
 		{
 			my_devices->head++;
 		}
-//		spin_unlock(&lock);
 	}
 
-	dbg1("device_file_write OUT\n");*/
+	dbg1("device_file_write OUT\n");
 	return length;
 }
 
@@ -227,6 +223,12 @@ static int device_open(struct inode *node, struct file *file)
 
 	my_devices->tail = my_devices->data;
 	my_devices->head = my_devices->data;
+
+#ifdef TEST
+	strncpy(my_devices->data,"Hello",6);
+	my_devices->head += 6;
+	my_devices->buffer_size = 6;
+#endif
 
 	my_devices->buffer_size = 0;
 	my_devices->device = device;
@@ -406,11 +408,11 @@ static int my_init(void)
 #ifndef GROUP_ATTRS
 	/* Now we can create the sysfs endpoints (don't care about errors).
 	 * dev_attr_work come from the DEVICE_ATTR(...) earlier */
-/*	dbg3("device_create_file()\n");
+	dbg3("device_create_file()\n");
 	ret = device_create_file(device, &dev_attr_work);
 	if (ret < 0) {
 		warn("failed to create write /sys endpoint - continuing without\n");
-	}*/
+	}
 #endif
 	dbg3("OUT\n");
 	return 0; 
