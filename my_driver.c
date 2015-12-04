@@ -5,42 +5,47 @@
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
+#include <linux/spinlock_types.h>
+#include <asm/uaccess.h>
+#include <linux/gpio.h>
 
 #define SUCCESS 0
-#define DEVICE_NAME "my_chardev"
-#define CLASS_DEVICE_NAME "my_class_chardev"
-#define MY_NDEVICES 1
+#define DEVICE_NAME "pin"
+#define CLASS_DEVICE_NAME "pinClass"
+#define MY_NDEVICES 4
 #define NUMBER_OF_MINOR_DEVICE 1
+#define GPIOMAXNAME	32
 
 //Enable it for define more than one /sys/class nodes for communication
-#define GROUP_ATTRS
+//#define GROUP_ATTRS
 
 /* The structure to represent 'my_dev' devices.
-* data - data buffer;
-* buffer_size - size of the data buffer;
-* block_size - maximum number of bytes that can be read or written
-* in one call;
-* my_dev_mutex - a mutex to protect the fields of this structure;
-* cdev - character device structure.
-*/
+ * my_dev_mutex - a mutex to protect the fields of this structure;
+ * cdev - character device structure.
+ */
 struct my_dev {
-	unsigned char *data;
-	unsigned long buffer_size;
-
-	unsigned long block_size;
+	char gp_name[GPIOMAXNAME];      /* pin name */
+	int gp_pin;		/* pin number */
+	int gp_offset;		/* pin number */
+	int gp_value;		/* value */
+	int gp_flags;		/* pin configuration flags */
 
 	struct mutex my_dev_mutex;
+	struct spinlock gpio_lock;
 	struct cdev my_cdev;
 	struct device *device;
 };
 
 static int my_device_Open;
 static int my_ndevices = MY_NDEVICES;		//number of device which can access your driver
+int firstminor = 0;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
 
 static struct my_dev *my_devices = NULL;
 static struct device *device = NULL;
 static struct cdev *my_cdev = NULL;
 static struct class *my_class = NULL;
+
+static int minor = 0;
 
 static int debug = 0;
 static int major = 0;
@@ -59,24 +64,24 @@ MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 
 static ssize_t work_store(struct device* dev, struct device_attribute* attr, const char* buf, size_t count)
 {
-	dbg1("work_store() %s\n",buf);
+	dbg1("Android_store() %s\n",buf);
 	return PAGE_SIZE;
 }
 
 static ssize_t work_show(struct device* dev, struct device_attribute* attr, char* buf)
 {
-	dbg1("work_show() %u\n", major);
+	dbg1("Android_show() %u\n", major);
 	return snprintf(buf, 10, "%u\n", major);
 }
 
-static DEVICE_ATTR(work, S_IRUGO | S_IWUGO, work_show, work_store);
+static DEVICE_ATTR(gpioAndroid, S_IRUGO | S_IWUGO, work_show, work_store);
 
 ///////////////////// Group Attribute /////////////////////////
 
 #ifdef GROUP_ATTRS
 static struct attribute *dev_attrs[] = {
-		&dev_attr_work.attr,
-		NULL,
+	&dev_attr_gpioAndroid.attr,
+	NULL,
 };
 
 static struct attribute_group dev_attr_group = {
@@ -94,34 +99,41 @@ static struct kobject *example_kobj;
 
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
 {
+	struct my_dev *my_devices = (struct my_dev *) file->private_data;
 	info("device_file_read IN");
 	return 0;
 }
 
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
+	struct my_dev *my_devices = (struct my_dev *) file->private_data;
 	info("device_file_write IN");
 	return 0;
 }
 
 static int device_open(struct inode *node, struct file *file)
 {
+	struct my_dev *my_devices = NULL;
+
 	info("device_open IN");
-	my_device_Open++;		//increment count when device is open.
 	if(my_device_Open)
 	{
 		return -EBUSY;
 	}
+	my_device_Open++;		//increment count when device is open.
+
 	return SUCCESS;
 }
 
 static int device_release(struct inode *node, struct file *file)
 {
+	struct my_dev *my_devices = (struct my_dev *) file->private_data;
+
 	info("device_release IN");
-	my_device_Open--;		//Decrement count when device is open.
+	my_device_Open--;       //Decrement count when device is open.
 	if(my_device_Open == 0)
 	{
-		//release device
+		info("device releasing...\n");
 	}
 	return SUCCESS;
 }
@@ -137,13 +149,11 @@ static struct file_operations my_fops =
 
 static void my_cleanup_module(void)
 {
+	int i = 0;
 	if(my_class) {
-#ifdef GROUP_ATTRS
-		kobject_put(example_kobj);
-#else
-		device_remove_file(device, &dev_attr_work);
-#endif
-		device_destroy(my_class, MKDEV(major, 0));		//static 0 should be change with other dynamic
+		for(i = firstminor ; i < my_ndevices ; i++) {
+			device_destroy(my_class, MKDEV(major, i));		//static 0 should be change with other dynamic
+		}
 	}
 
 	if(my_cdev != NULL) {
@@ -161,12 +171,11 @@ static void my_cleanup_module(void)
 static int my_init(void)
 {
 	int ret = 0;
-	int firstminor = 0;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
 	dev_t devnum;
 
 	//print commandline argument
 	info("\n=============\nFor debug level 1 ,2 ,3 : pass debug=3 as argument\n\
-For Major number select statically : pass major=250 as argument\n=============\n");
+			For Major number select statically : pass major=250 as argument\n=============\n");
 
 	dbg2("debug's debug level : %d selected.\n",debug);
 	dbg2("major number argv : %d selected.\n",major);
@@ -198,6 +207,7 @@ For Major number select statically : pass major=250 as argument\n=============\n
 		return ret; 
 	}
 	major = MAJOR(devnum);
+	minor = MINOR(devnum);
 	devnum = MKDEV(major,0);
 	info("The major number is %d\n",major);
 
@@ -211,7 +221,7 @@ For Major number select statically : pass major=250 as argument\n=============\n
 		goto clean_up;
 	}
 
-    /* Allocate the array of devices */
+	/* Allocate the array of devices */
 	my_devices = (struct my_dev *) kzalloc((sizeof(struct my_dev) * my_ndevices), GFP_KERNEL);
 	if(my_devices == NULL)
 	{
@@ -220,7 +230,7 @@ For Major number select statically : pass major=250 as argument\n=============\n
 		goto clean_up;
 	}
 
-//=================================================================
+	//=================================================================
 	// we can create dynamic memory by kzalloc also for our device structure
 	my_cdev = cdev_alloc( );
 	if(my_cdev == NULL)	{
@@ -242,13 +252,13 @@ For Major number select statically : pass major=250 as argument\n=============\n
 	 *
 	 * You should not call cdev_add until your driver is completely ready to handle operations
 	 */
-	ret = cdev_add(my_cdev, devnum, 1);
+	ret = cdev_add(my_cdev, devnum, my_ndevices);
 	if(ret < 0)
 	{
 		err("cdev_add() failed\nUnable to add cdev\n");
 		goto clean_up;
 	}
-//=================================================================
+	//=================================================================
 
 #ifdef GROUP_ATTRS
 	//dbg3("device  kzalloc()\n");
@@ -279,20 +289,23 @@ For Major number select statically : pass major=250 as argument\n=============\n
 	/* add the driver to /dev/my_chardev -- here
 	 * command : $ ls /dev/
 	 */
+	int i = 0;
 	dbg3("device_create()\n");
 	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
-	device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME "-%d", firstminor);
-	if (IS_ERR(device)) {
-		ret = PTR_ERR(device);
-		err("[target] Error %d while trying to create %s%d", ret, DEVICE_NAME, firstminor);
-		goto clean_up;
+	for(i = firstminor ; i < my_ndevices ; i++) {
+		device = device_create(my_class, NULL, MKDEV(major,i), NULL, DEVICE_NAME "-%d", i);
+		if (IS_ERR(device)) {
+			ret = PTR_ERR(device);
+			err("[target] Error %d while trying to create %s-%d", ret, DEVICE_NAME, firstminor);
+			goto clean_up;
+		}
 	}
 
 #ifndef GROUP_ATTRS
 	/* Now we can create the sysfs endpoints (don't care about errors).
-	  * dev_attr_work come from the DEVICE_ATTR(...) earlier */
+	 * dev_attr_work come from the DEVICE_ATTR(...) earlier */
 	dbg3("device_create_file()\n");
-	ret = device_create_file(device, &dev_attr_work);
+	ret = device_create_file(device, &dev_attr_gpioAndroid);
 	if (ret < 0) {
 		warn("failed to create write /sys endpoint - continuing without\n");
 	}
