@@ -23,25 +23,31 @@
  * my_dev_mutex - a mutex to protect the fields of this structure;
  * cdev - character device structure.
  */
-struct my_dev {
+
+struct gp_info {
 	char gp_name[GPIOMAXNAME];      /* pin name */
 	int gp_pin;		/* pin number */
 	int gp_offset;		/* pin number */
 	int gp_value;		/* value */
 	int gp_flags;		/* pin configuration flags */
+};
+
+struct my_dev {
+	struct gp_info* gpio_info[MY_NDEVICES];
 
 	struct mutex my_dev_mutex;
-	struct spinlock gpio_lock;
+	struct spinlock gpio_spinlock;
 	struct cdev my_cdev;
 	struct device *device;
 };
 
+
 static int my_device_Open;
 static int my_ndevices = MY_NDEVICES;		//number of device which can access your driver
-int firstminor = 0;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
+int firstminor = 21;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
 
 static struct my_dev *my_devices = NULL;
-static struct device *device = NULL;
+static struct device *device[MY_NDEVICES] = {0, };
 static struct cdev *my_cdev = NULL;
 static struct class *my_class = NULL;
 
@@ -54,13 +60,16 @@ module_param(major, int, 0);
 MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 
 /* We'll use our own macros for printk */
-#define CLASS_NAME "Driver"
+#define CLASS_NAME "pinClass"
 #define dbg1(format, arg...) do { if (debug > 0) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg2(format, arg...) do { if (debug > 1) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg3(format, arg...) do { if (debug > 2) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
-#define err(format, arg...) pr_err(CLASS_NAME ": " format, ## arg)
-#define info(format, arg...) pr_info(CLASS_NAME ": " format, ## arg)
-#define warn(format, arg...) pr_warn(CLASS_NAME ": " format, ## arg)
+#define err(format, arg...) pr_err(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg)
+#define info(format, arg...) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg)
+#define warn(format, arg...) pr_warn(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg)
+//#define err(format, arg...) pr_err(CLASS_NAME ": " format, ## arg)
+//#define info(format, arg...) pr_info(CLASS_NAME ": " format, ## arg)
+//#define warn(format, arg...) pr_warn(CLASS_NAME ": " format, ## arg)
 
 static ssize_t work_store(struct device* dev, struct device_attribute* attr, const char* buf, size_t count)
 {
@@ -100,27 +109,46 @@ static struct kobject *example_kobj;
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
 {
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
-	info("device_file_read IN");
+	info("IN\n");
 	return 0;
 }
 
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
-	info("device_file_write IN");
+	info("IN\n");
 	return 0;
 }
 
 static int device_open(struct inode *node, struct file *file)
 {
-	struct my_dev *my_devices = NULL;
+	int minorNo = iminor(node);
 
-	info("device_open IN");
-	if(my_device_Open)
+	info("IN\n");
+	if(my_device_Open > 4)
 	{
 		return -EBUSY;
 	}
 	my_device_Open++;		//increment count when device is open.
+	info("/dev/pin-%d opening\n", minorNo);
+
+//	for(i=0 ; i < my_ndevices ; i++) {
+	my_devices->gpio_info[minorNo - firstminor] = (struct gp_info *) kmalloc((sizeof(struct gp_info)), GFP_KERNEL);
+	if(my_devices->gpio_info[minorNo - firstminor] == NULL)
+	{
+		err("my_devices->gpio_info failed. No memory allocated to structure.\n");
+		return -ENOMEM;
+	}
+	dbg2("my_Device->gpio_info[%d]) malloc called\n",minorNo - firstminor);
+
+	dbg2("node->i_cdev: %x\n", node->i_cdev);
+	dbg2("my_cdev: %x\n", my_cdev);
+
+	my_devices->device = device;
+	dbg2("MAJOR(node->i_rdev): %d i_fop: %x\n", MAJOR(node->i_rdev), node->i_fop);
+
+	file->private_data = (struct my_dev *) my_devices;
+	dbg1("OUT\n");
 
 	return SUCCESS;
 }
@@ -128,13 +156,26 @@ static int device_open(struct inode *node, struct file *file)
 static int device_release(struct inode *node, struct file *file)
 {
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
+	int minorNo = iminor(node);
 
-	info("device_release IN");
+	info("IN\n");
 	my_device_Open--;       //Decrement count when device is open.
+
+	if(my_devices)
+	{
+		kfree(my_devices->gpio_info[minorNo - firstminor]);
+		my_devices->gpio_info[minorNo - firstminor] = NULL;
+		dbg2("my_Device->gpio_info[%d]) free called\n",minorNo - firstminor);
+	}
+
 	if(my_device_Open == 0)
 	{
-		info("device releasing...\n");
+		info("device releasing ...\n");
+		kfree(my_devices);
+		my_devices = NULL;
+		file->private_data = NULL;
 	}
+	dbg1("OUT\n");
 	return SUCCESS;
 }
 
@@ -151,20 +192,23 @@ static void my_cleanup_module(void)
 {
 	int i = 0;
 	if(my_class) {
-		for(i = firstminor ; i < my_ndevices ; i++) {
+		info("1. device_destroy called\n");
+		for(i = firstminor ; i <  firstminor + my_ndevices ; i++) {
 			device_destroy(my_class, MKDEV(major, i));		//static 0 should be change with other dynamic
 		}
 	}
 
 	if(my_cdev != NULL) {
+		info("2. cdev_del called\n");
 		cdev_del(my_cdev);
 	}
 
 	if(my_class) {
+		info("3. class_destroy called\n");
 		class_destroy(my_class);
 	}
 
-	unregister_chrdev_region(MKDEV(major, 0), my_ndevices);
+	unregister_chrdev_region(MKDEV(major, minor), my_ndevices);
 	return;
 }
 
@@ -188,8 +232,8 @@ static int my_init(void)
 		return ret;
 	}
 
-	devnum = MKDEV(major,0);
-	if(devnum == 0) {
+	devnum = MKDEV(major,firstminor);
+	if(MAJOR(devnum) == 0) {
 		/*
 		 * Allocate Major number dynamically
 		 * Get a range of minor numbers (starting with 0) to work with.
@@ -208,8 +252,8 @@ static int my_init(void)
 	}
 	major = MAJOR(devnum);
 	minor = MINOR(devnum);
-	devnum = MKDEV(major,0);
-	info("The major number is %d\n",major);
+	devnum = MKDEV(major,minor);
+	info("The major number is %d and minor is %d\n",major, minor);
 
 	/* Create device class called CLASS_DEVICE_NAME macro(before allocation of devices) 
 	 * command : $ ls /sys/class
@@ -222,7 +266,7 @@ static int my_init(void)
 	}
 
 	/* Allocate the array of devices */
-	my_devices = (struct my_dev *) kzalloc((sizeof(struct my_dev) * my_ndevices), GFP_KERNEL);
+	my_devices = (struct my_dev *) kzalloc((sizeof(struct my_dev)), GFP_KERNEL);
 	if(my_devices == NULL)
 	{
 		ret = -ENOMEM;
@@ -239,7 +283,7 @@ static int my_init(void)
 	}
 
 	my_cdev->ops = &my_fops;
-	my_cdev->count = 0;
+//	my_cdev->count = 0;
 	my_cdev->owner = THIS_MODULE;
 
 	/** Initiliaze character dev with fops **/
@@ -247,7 +291,7 @@ static int my_init(void)
 
 	/* add the character device to the system
 	 *
-	 * Here 1 means only 1 minor number, you can give 2 for 2 minor device, 
+	 * Here my_ndevices means my_ndevices minor number, you can give 2 for 2 minor device, 
 	 * the last param is the count of minor number enrolled
 	 *
 	 * You should not call cdev_add until your driver is completely ready to handle operations
@@ -256,6 +300,8 @@ static int my_init(void)
 	if(ret < 0)
 	{
 		err("cdev_add() failed\nUnable to add cdev\n");
+		// FIXED Don't know about kobject_put should use or not for decrement count.
+		// kobject_put(&my_cdev->kobj); = Not require
 		goto clean_up;
 	}
 	//=================================================================
@@ -281,8 +327,9 @@ static int my_init(void)
 
 	/* Create the files associated with this kobject */
 	ret = sysfs_create_group(example_kobj, *dev_attr_groups);
-	if (ret)
+	if (ret) {
 		kobject_put(example_kobj);
+	}
 
 #endif
 
@@ -290,24 +337,26 @@ static int my_init(void)
 	 * command : $ ls /dev/
 	 */
 	int i = 0;
-	dbg3("device_create()\n");
+	dbg3("device_create() called\n");
 	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
-	for(i = firstminor ; i < my_ndevices ; i++) {
-		device = device_create(my_class, NULL, MKDEV(major,i), NULL, DEVICE_NAME "-%d", i);
+	for(i = firstminor ; i <  firstminor + my_ndevices ; i++) {
+		device[i - firstminor] = device_create(my_class, NULL, MKDEV(major,i), NULL, DEVICE_NAME "-%d", i);
 		if (IS_ERR(device)) {
 			ret = PTR_ERR(device);
 			err("[target] Error %d while trying to create %s-%d", ret, DEVICE_NAME, firstminor);
 			goto clean_up;
 		}
+		dbg3("device %s-%d created for %d.%d \n",DEVICE_NAME,i, major,i);
 	}
 
 #ifndef GROUP_ATTRS
 	/* Now we can create the sysfs endpoints (don't care about errors).
 	 * dev_attr_work come from the DEVICE_ATTR(...) earlier */
-	dbg3("device_create_file()\n");
-	ret = device_create_file(device, &dev_attr_gpioAndroid);
-	if (ret < 0) {
-		warn("failed to create write /sys endpoint - continuing without\n");
+	for(i = firstminor ; i <  firstminor + my_ndevices ; i++) {
+		ret = device_create_file(device[i - firstminor], &dev_attr_gpioAndroid);
+		if (ret < 0) {
+			warn("failed to create write /sys endpoint - continuing without\n");
+		}
 	}
 #endif
 	dbg3("OUT\n");
@@ -320,7 +369,7 @@ clean_up:
 
 static void my_exit(void)
 {
-	info("my_exit() called\n");
+	info("IN\n");
 	my_cleanup_module();
 	return;
 }
