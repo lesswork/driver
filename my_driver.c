@@ -8,6 +8,9 @@
 #include <linux/spinlock_types.h>
 #include <asm/uaccess.h>
 #include <linux/gpio.h>
+#include <linux/ioctl.h>
+#include <linux/version.h>
+#include "edgegpio.h"
 
 #define SUCCESS 0
 #define DEVICE_NAME "pin"
@@ -120,6 +123,41 @@ static ssize_t device_file_write(struct file *file, const char __user *buffer, s
 	return 0;
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35))
+static int device_ioctl(struct inode *node, struct file *file, unsigned int cmd, unsigned long gpioNo)
+#else
+static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+#endif
+{
+	int ret = 0;
+	int gpioport = iminor(file->f_inode);
+	info("/dev/pin-%d ioctl opening\n", iminor(file->f_inode));
+
+/*	switch (cmd)
+	{
+		case EDGE_SETPORT_GPIO_OUTPUT:
+			ret = gpio_direction_output(gpioport, 0);
+			{
+				return -EACCES;
+			}
+			break;
+
+		case EDGE_SETPORT_GPIO_INPUT:
+			gpio_direction_input(gpioport);
+			{
+				return -EACCES;
+			}
+			break;
+
+		case EDGE_SETPORT_ADC:
+
+		case EDGE_SETPORT_PWM:
+
+		default:
+			return -EINVAL;
+	}*/
+}
+
 static int device_open(struct inode *node, struct file *file)
 {
 	int minorNo = iminor(node);
@@ -132,7 +170,6 @@ static int device_open(struct inode *node, struct file *file)
 	my_device_Open++;		//increment count when device is open.
 	info("/dev/pin-%d opening\n", minorNo);
 
-//	for(i=0 ; i < my_ndevices ; i++) {
 	my_devices->gpio_info[minorNo - firstminor] = (struct gp_info *) kmalloc((sizeof(struct gp_info)), GFP_KERNEL);
 	if(my_devices->gpio_info[minorNo - firstminor] == NULL)
 	{
@@ -185,7 +222,12 @@ static struct file_operations my_fops =
 	.read   	= device_file_read,
 	.write		= device_file_write,
 	.open		= device_open,
-	.release	= device_release
+	.release	= device_release,
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35))
+	.ioctl		= device_ioctl
+#else
+	.unlocked_ioctl		= device_ioctl
+#endif
 };
 
 static void my_cleanup_module(void)
