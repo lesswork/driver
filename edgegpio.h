@@ -16,4 +16,9 @@ typedef struct
 #define EDGE_SETPORT_ADC _IOW(EDGE_MAGIC, 3, andgpio_arg_t *)
 #define EDGE_SETPORT_PWM _IOW(EDGE_MAGIC, 4, andgpio_arg_t *)
 
+#define GPIO_OUTPUT_PORT	1
+#define GPIO_INPUT_PORT		2
+#define GPIO_ADC_PORT		3
+#define GPIO_PWM_PORT		4
+
 #endif

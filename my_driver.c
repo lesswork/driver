@@ -10,6 +10,7 @@
 #include <linux/gpio.h>
 #include <linux/ioctl.h>
 #include <linux/version.h>
+#include <linux/delay.h>
 #include "edgegpio.h"
 
 #define SUCCESS 0
@@ -29,10 +30,11 @@
 
 struct gp_info {
 	char gp_name[GPIOMAXNAME];      /* pin name */
-	int gp_pin;		/* pin number */
-	int gp_offset;		/* pin number */
-	int gp_value;		/* value */
-	int gp_flags;		/* pin configuration flags */
+	int gp_pin;				/* pin number */
+	int gp_type;			/* pin multiplex type */
+	int gp_value;			/* value */
+	int gp_flags;			/* pin request configuration flags */
+	struct device *device;	/* struct device should stores here */
 };
 
 struct my_dev {
@@ -41,13 +43,14 @@ struct my_dev {
 	struct mutex my_dev_mutex;
 	struct spinlock gpio_spinlock;
 	struct cdev my_cdev;
-	struct device *device;
 };
 
 
 static int my_device_Open;
 static int my_ndevices = MY_NDEVICES;		//number of device which can access your driver
-int firstminor = 21;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
+//The first minor number in case you are looking for a series of minor numbers for your driver. 
+// GPIO1_21 = 32 (GPIO 0) + 21 (GPIO 1)
+int firstminor = 32 + 21;
 
 static struct my_dev *my_devices = NULL;
 static struct device *device[MY_NDEVICES] = {0, };
@@ -63,7 +66,7 @@ module_param(major, int, 0);
 MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 
 /* We'll use our own macros for printk */
-#define CLASS_NAME "pinClass"
+#define CLASS_NAME "my_driver"
 #define dbg1(format, arg...) do { if (debug > 0) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg2(format, arg...) do { if (debug > 1) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg3(format, arg...) do { if (debug > 2) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
@@ -76,13 +79,29 @@ MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 
 static ssize_t work_store(struct device* dev, struct device_attribute* attr, const char* buf, size_t count)
 {
+	//code for testing purpose only
+	int gpio = 53;
+	int err = 0;
 	dbg1("Android_store() %s\n",buf);
+	info("pin = %d\n", gpio);
+	info("write %d\n", ((*buf)-'\0'));
+
+	/* GPIO OUTPUT */
+	err = gpio_request_one(gpio, GPIOF_OUT_INIT_LOW, "USR0 LED");
+	if(err)
+		err("gpio_request_one failed.\n");
+
+	gpio_set_value(gpio, ((*buf)-48));
+
 	return PAGE_SIZE;
 }
 
 static ssize_t work_show(struct device* dev, struct device_attribute* attr, char* buf)
 {
+	int gpio = 53;
 	dbg1("Android_show() %u\n", major);
+	gpio_set_value(gpio, 0);
+
 	return snprintf(buf, 10, "%u\n", major);
 }
 
@@ -112,41 +131,66 @@ static struct kobject *example_kobj;
 static ssize_t device_file_read(struct file *file, char __user *buffer, size_t length, loff_t *offset)
 {
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
+	int value = 0;
+	int gpio = iminor(file->f_path.dentry->d_inode);
 	info("IN\n");
+
+	value = gpio_get_value(gpio);
+	my_devices->gpio_info[gpio - firstminor]->gp_value = value;
+	//value returned as integer in user buffer
+	*buffer = value;
+
 	return 0;
 }
 
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
-	info("IN\n");
+	int value = *buffer - '\0';
+	int gpio = iminor(file->f_path.dentry->d_inode);
+	info("IN buffer : %s\n",buffer);
+
+	/* GPIO OUTPUT */
+	if((my_devices->gpio_info[gpio - firstminor]->gp_value && 1) != (value && 1)) {
+		gpio_set_value(gpio, value);
+		my_devices->gpio_info[gpio - firstminor]->gp_value = value;
+		info("pin = %d write %d\n", gpio, value);
+	}
 	return 0;
 }
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35))
-static int device_ioctl(struct inode *node, struct file *file, unsigned int cmd, unsigned long gpioNo)
+static int device_ioctl(struct inode *node, struct file *file, unsigned int cmd, unsigned long arg)
 #else
 static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 #endif
 {
 	int ret = 0;
-	int gpioport = iminor(file->f_inode);
-	info("/dev/pin-%d ioctl opening\n", iminor(file->f_inode));
+	int gpioNo = iminor(file->f_path.dentry->d_inode);
+	info("/dev/pin-%d ioctl opening\n", gpioNo);
 
-/*	switch (cmd)
+	switch (cmd)
 	{
 		case EDGE_SETPORT_GPIO_OUTPUT:
-			ret = gpio_direction_output(gpioport, 0);
-			{
+			/* GPIO OUTPUT */
+			ret = gpio_request_one(gpioNo, GPIOF_OUT_INIT_LOW, "USR LED");
+			if(ret) {
+				err("gpio_request_one failed.\n");
 				return -EACCES;
 			}
+			my_devices->gpio_info[gpioNo - firstminor]->gp_flags |= GPIOF_OUT_INIT_LOW;
+			my_devices->gpio_info[gpioNo - firstminor]->gp_type |= GPIO_OUTPUT_PORT;
 			break;
 
 		case EDGE_SETPORT_GPIO_INPUT:
-			gpio_direction_input(gpioport);
-			{
+			/* GPIO INPUT */
+			ret = gpio_request_one(gpioNo, GPIOF_IN, "USR LED");
+			if(ret) {
+				err("gpio_request_one failed.\n");
 				return -EACCES;
 			}
+			my_devices->gpio_info[gpioNo - firstminor]->gp_flags |= GPIOF_IN;
+			my_devices->gpio_info[gpioNo - firstminor]->gp_type |= GPIO_INPUT_PORT;
 			break;
 
 		case EDGE_SETPORT_ADC:
@@ -155,12 +199,15 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		default:
 			return -EINVAL;
-	}*/
+	}
+	return ret;
 }
 
 static int device_open(struct inode *node, struct file *file)
 {
 	int minorNo = iminor(node);
+	int arrayNo = minorNo - firstminor;
+	int ret = 0;
 
 	info("IN\n");
 	if(my_device_Open > 4)
@@ -170,8 +217,8 @@ static int device_open(struct inode *node, struct file *file)
 	my_device_Open++;		//increment count when device is open.
 	info("/dev/pin-%d opening\n", minorNo);
 
-	my_devices->gpio_info[minorNo - firstminor] = (struct gp_info *) kmalloc((sizeof(struct gp_info)), GFP_KERNEL);
-	if(my_devices->gpio_info[minorNo - firstminor] == NULL)
+	my_devices->gpio_info[arrayNo] = (struct gp_info *) kzalloc((sizeof(struct gp_info)), GFP_KERNEL);
+	if(my_devices->gpio_info[arrayNo] == NULL)
 	{
 		err("my_devices->gpio_info failed. No memory allocated to structure.\n");
 		return -ENOMEM;
@@ -181,9 +228,16 @@ static int device_open(struct inode *node, struct file *file)
 	dbg2("node->i_cdev: %x\n", node->i_cdev);
 	dbg2("my_cdev: %x\n", my_cdev);
 
-	my_devices->device = device;
+	my_devices->gpio_info[arrayNo]->device = device[arrayNo];
 	dbg2("MAJOR(node->i_rdev): %d i_fop: %x\n", MAJOR(node->i_rdev), node->i_fop);
 
+	/* GPIO OUTPUT */
+	ret = gpio_request_one(minorNo, GPIOF_OUT_INIT_LOW, "USR LED");
+	if(ret) {
+		err("gpio_request_one failed.\n");
+	}
+
+	my_devices->gpio_info[minorNo - firstminor]->gp_pin = minorNo;
 	file->private_data = (struct my_dev *) my_devices;
 	dbg1("OUT\n");
 
@@ -212,6 +266,7 @@ static int device_release(struct inode *node, struct file *file)
 		my_devices = NULL;
 		file->private_data = NULL;
 	}
+	gpio_free(minorNo);
 	dbg1("OUT\n");
 	return SUCCESS;
 }
@@ -226,7 +281,7 @@ static struct file_operations my_fops =
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35))
 	.ioctl		= device_ioctl
 #else
-	.unlocked_ioctl		= device_ioctl
+		.unlocked_ioctl		= device_ioctl
 #endif
 };
 
@@ -257,6 +312,7 @@ static void my_cleanup_module(void)
 static int my_init(void)
 {
 	int ret = 0;
+	int i = 0;
 	dev_t devnum;
 
 	//print commandline argument
@@ -325,7 +381,7 @@ static int my_init(void)
 	}
 
 	my_cdev->ops = &my_fops;
-//	my_cdev->count = 0;
+	//	my_cdev->count = 0;
 	my_cdev->owner = THIS_MODULE;
 
 	/** Initiliaze character dev with fops **/
@@ -378,7 +434,6 @@ static int my_init(void)
 	/* add the driver to /dev/my_chardev -- here
 	 * command : $ ls /dev/
 	 */
-	int i = 0;
 	dbg3("device_create() called\n");
 	//device = device_create(my_class, NULL, devnum, NULL, DEVICE_NAME);
 	for(i = firstminor ; i <  firstminor + my_ndevices ; i++) {
