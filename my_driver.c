@@ -10,7 +10,6 @@
 #include <linux/gpio.h>
 #include <linux/ioctl.h>
 #include <linux/version.h>
-#include <linux/delay.h>
 #include "edgegpio.h"
 
 #define SUCCESS 0
@@ -66,7 +65,7 @@ module_param(major, int, 0);
 MODULE_PARM_DESC(debug, "An Integer type for debug level (1,2,3)");
 
 /* We'll use our own macros for printk */
-#define CLASS_NAME "my_driver"
+#define CLASS_NAME "pinClass"
 #define dbg1(format, arg...) do { if (debug > 0) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg2(format, arg...) do { if (debug > 1) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
 #define dbg3(format, arg...) do { if (debug > 2) pr_info(CLASS_NAME ": %s: " format, __FUNCTION__, ## arg); } while (0)
@@ -281,7 +280,7 @@ static struct file_operations my_fops =
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35))
 	.ioctl		= device_ioctl
 #else
-		.unlocked_ioctl		= device_ioctl
+	.unlocked_ioctl		= device_ioctl
 #endif
 };
 
