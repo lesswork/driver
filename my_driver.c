@@ -83,14 +83,14 @@ static ssize_t work_store(struct device* dev, struct device_attribute* attr, con
 	int err = 0;
 	dbg1("Android_store() %s\n",buf);
 	info("pin = %d\n", gpio);
-	info("write %d\n", ((*buf)-'\0'));
+	info("write %d\n", ((*buf)-'0'));
 
 	/* GPIO OUTPUT */
 	err = gpio_request_one(gpio, GPIOF_OUT_INIT_LOW, "USR0 LED");
 	if(err)
 		err("gpio_request_one failed.\n");
 
-	gpio_set_value(gpio, ((*buf)-48));
+	gpio_set_value(gpio, ((*buf)-'0'));
 
 	return PAGE_SIZE;
 }
@@ -145,7 +145,7 @@ static ssize_t device_file_read(struct file *file, char __user *buffer, size_t l
 static ssize_t device_file_write(struct file *file, const char __user *buffer, size_t length, loff_t *offset)
 {
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
-	int value = *buffer - '\0';
+	int value = *buffer - '0';
 	int gpio = iminor(file->f_path.dentry->d_inode);
 	info("IN buffer : %s\n",buffer);
 
@@ -193,9 +193,9 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			break;
 
 		case EDGE_SETPORT_ADC:
-
+			// Enhancement
 		case EDGE_SETPORT_PWM:
-
+			// Enhancement
 		default:
 			return -EINVAL;
 	}
