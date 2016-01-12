@@ -10,7 +10,7 @@
 #include <linux/gpio.h>
 #include <linux/ioctl.h>
 #include <linux/version.h>
-#include "edgegpio.h"
+#include "gpio.h"
 
 #define SUCCESS 0
 #define DEVICE_NAME "pin"
@@ -132,7 +132,7 @@ static ssize_t device_file_read(struct file *file, char __user *buffer, size_t l
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
 	int value = 0;
 	int gpio = iminor(file->f_path.dentry->d_inode);
-	info("IN\n");
+	dbg3("IN\n");
 
 	value = gpio_get_value(gpio);
 	my_devices->gpio_info[gpio - firstminor]->gp_value = value;
@@ -147,13 +147,13 @@ static ssize_t device_file_write(struct file *file, const char __user *buffer, s
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
 	int value = *buffer - '0';
 	int gpio = iminor(file->f_path.dentry->d_inode);
-	info("IN buffer : %s\n",buffer);
+	dbg3("IN buffer : %c\n",*buffer);
 
 	/* GPIO OUTPUT */
 	if((my_devices->gpio_info[gpio - firstminor]->gp_value && 1) != (value && 1)) {
 		gpio_set_value(gpio, value);
 		my_devices->gpio_info[gpio - firstminor]->gp_value = value;
-		info("pin = %d write %d\n", gpio, value);
+		dbg2("pin = %d write %d\n", gpio, value);
 	}
 	return 0;
 }
@@ -166,16 +166,18 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	int ret = 0;
 	int gpioNo = iminor(file->f_path.dentry->d_inode);
-	info("/dev/pin-%d ioctl opening\n", gpioNo);
+	dbg1("/dev/pin-%d ioctl opening\n", gpioNo);
 
 	switch (cmd)
 	{
 		case EDGE_SETPORT_GPIO_OUTPUT:
 			/* GPIO OUTPUT */
-			ret = gpio_request_one(gpioNo, GPIOF_OUT_INIT_LOW, "USR LED");
-			if(ret) {
-				err("gpio_request_one failed.\n");
-				return -EACCES;
+			//ret = gpio_request_one(gpioNo, GPIOF_OUT_INIT_LOW, "USR LED");
+			dbg1("gpio_direction_output OUTPUT\n");
+			ret = gpio_direction_output(gpioNo, 0);
+			if(ret < 0) {
+				err("\tfailed : %d\n", ret);
+				return ret;
 			}
 			my_devices->gpio_info[gpioNo - firstminor]->gp_flags |= GPIOF_OUT_INIT_LOW;
 			my_devices->gpio_info[gpioNo - firstminor]->gp_type |= GPIO_OUTPUT_PORT;
@@ -183,10 +185,12 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		case EDGE_SETPORT_GPIO_INPUT:
 			/* GPIO INPUT */
-			ret = gpio_request_one(gpioNo, GPIOF_IN, "USR LED");
-			if(ret) {
-				err("gpio_request_one failed.\n");
-				return -EACCES;
+			//ret = gpio_request_one(gpioNo, GPIOF_IN, "USR LED");
+			dbg1("gpio_direction_output INPUT\n");
+			ret = gpio_direction_input(gpioNo);
+			if(ret < 0) {
+				err("\tfailed : %d\n", ret);
+				return ret;
 			}
 			my_devices->gpio_info[gpioNo - firstminor]->gp_flags |= GPIOF_IN;
 			my_devices->gpio_info[gpioNo - firstminor]->gp_type |= GPIO_INPUT_PORT;
@@ -208,7 +212,7 @@ static int device_open(struct inode *node, struct file *file)
 	int arrayNo = minorNo - firstminor;
 	int ret = 0;
 
-	info("IN\n");
+	dbg3("IN\n");
 	if(my_device_Open > 4)
 	{
 		return -EBUSY;
@@ -238,7 +242,7 @@ static int device_open(struct inode *node, struct file *file)
 
 	my_devices->gpio_info[minorNo - firstminor]->gp_pin = minorNo;
 	file->private_data = (struct my_dev *) my_devices;
-	dbg1("OUT\n");
+	dbg3("OUT\n");
 
 	return SUCCESS;
 }
@@ -248,7 +252,7 @@ static int device_release(struct inode *node, struct file *file)
 	struct my_dev *my_devices = (struct my_dev *) file->private_data;
 	int minorNo = iminor(node);
 
-	info("IN\n");
+	dbg3("IN\n");
 	my_device_Open--;       //Decrement count when device is open.
 
 	if(my_devices)
@@ -266,7 +270,7 @@ static int device_release(struct inode *node, struct file *file)
 		file->private_data = NULL;
 	}
 	gpio_free(minorNo);
-	dbg1("OUT\n");
+	dbg3("OUT\n");
 	return SUCCESS;
 }
 
