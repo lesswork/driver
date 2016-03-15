@@ -158,7 +158,12 @@ static void my_cleanup_module(void)
 	return;
 }
 
-static int my_init(void)
+/** __init
+ * The __init macro causes the init function to be discarded.
+ * and its memory freed once the init function finishes for built-in drivers, but not loadable modules. 
+ * There is also an __initdata which works similarly to __init but for init variables rather than functions.
+ **/
+static int __init my_init(void)
 {
 	int ret = 0;
 	int firstminor = 0;		//The first minor number in case you are looking for a series of minor numbers for your driver. 
@@ -305,7 +310,11 @@ clean_up:
 	return ret;
 }
 
-static void my_exit(void)
+/**__exit
+ * The __exit macro causes the omission of the function when the module is built into the kernel, 
+ * and like __exit, has no effect for loadable modules.
+ **/
+static void __exit my_exit(void)
 {
 	info("my_exit() called\n");
 	my_cleanup_module();
